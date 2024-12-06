@@ -1,0 +1,92 @@
+stages:
+  - lint
+  - coverage
+  - build
+  - deploy
+
+include:
+  - project: 'Project-name/gitlab-ci' # https://gitlab.domain.com/Project/gitlab-ci
+    ref: 'main'
+    file:
+      - '/defaults.yml'
+  - local: "/ci/stg.yml"
+  - local: "/ci/prd.yml"
+
+# Linting of code
+lint:
+  extends: [ '.docker-runner' ] # The tag of runner
+  stage: lint
+  image: docker:25
+  before_script:
+    - apk add make
+  services:
+    - docker:25-dind
+  script:
+    - cp .env.dev .env
+    - TEST_TAG=$CI_COMMIT_SHORT_SHA make lint
+
+# Coverage by tests
+coverage:
+  extends: [ '.docker-runner' ] # The tag of docker-runner
+  stage: coverage
+  image: docker:25
+  before_script:
+    - apk add make
+  services: [ docker:25-dind ]
+  script:
+    - cp .env.dev .env
+    - TEST_TAG=$CI_COMMIT_SHORT_SHA make coverage
+
+# Build a docker image
+build:
+  stage: build
+  extends: [ '.prd-branch', '.docker-runner', '.build' ]
+  script:
+    - echo "Build process initiated"
+
+# Deploy to server Docker (Dev)
+deploy-dev:
+  stage: deploy
+  needs: [build]
+  extends: [ '.prd-branch', '.deploy' ] 
+  environment:
+    name: dev
+  variables:
+    HOST: gitlab@docker.domain.com # The runner
+    PROJECT_FOLDER: /srv/docker/<project_folder>
+    SSH_KEY: "${SSH_PRIVATE_KEY_gitlab_at_docker01_domain_com}"
+    DEPLOY_COMMAND: 'git pull && docker compose up -d app pgadmin'
+
+# Deploy to the cluster Kubernetes (EKS)
+deploy-eks:
+  stage: deploy
+  image: amazon/aws-cli:2.13.2
+  needs: [build]
+  environment:
+    name: dev
+  variables:
+    KUBECONFIG: "${CI_PROJECT_DIR}/kubeconfig"
+    VALUES_FILE: ".ci/dev/values.yaml" # Take specific values from the file
+    APP_VERSION: $CI_COMMIT_SHORT_SHA
+    IMAGE_TAG: "registry.gitlab.com/project/<project_folder>:$CI_COMMIT_SHORT_SHA"
+    K8S_NAMESPACE: dev
+  before_script:
+    - aws eks update-kubeconfig --name $CLUSTER_NAME --kubeconfig $KUBECONFIG
+  script:
+    # Install and update Helm
+    - helm upgrade --install project_folder ./ci/helm \
+        --values ${VALUES_FILE} \
+        --set appVersion=${APP_VERSION} \
+        --set global.image=${IMAGE_TAG} \
+        --namespace ${K8S_NAMESPACE} \
+        --create-namespace \
+        --cleanup-on-fail \
+        --atomic
+    # Check deploy
+    - kubectl rollout status deployment/<project_folder> -n ${K8S_NAMESPACE} --timeout=60s
+    - kubectl get pods -n ${K8S_NAMESPACE} || exit 1
+    - kubectl logs deployment/<project_folder> -n ${K8S_NAMESPACE} || exit 1
+  after_script:
+    - rm -f ${KUBECONFIG}
+  only:
+    - <branch_name>
