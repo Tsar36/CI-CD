@@ -54,7 +54,7 @@ deploy-dev:
   variables:
     HOST: gitlab@docker.domain.com # The runner
     PROJECT_FOLDER: /srv/docker/<project_folder>
-    SSH_KEY: "${SSH_PRIVATE_KEY_gitlab_at_docker01_domain_com}"
+    SSH_KEY: "${SSH_PRIVATE_KEY_gitlab_at_docker_domain_com}"
     DEPLOY_COMMAND: 'git pull && docker compose up -d app pgadmin'
 
 # Deploy to the cluster Kubernetes (EKS)
@@ -73,7 +73,7 @@ deploy-eks:
   before_script:
     - aws eks update-kubeconfig --name $CLUSTER_NAME --kubeconfig $KUBECONFIG
   script:
-    # Install and update Helm
+    # Install and update Helm using spec values file from another directory.
     - helm upgrade --install project_folder ./ci/helm \
         --values ${VALUES_FILE} \
         --set appVersion=${APP_VERSION} \
