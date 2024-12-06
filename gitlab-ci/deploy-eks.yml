@@ -1,0 +1,78 @@
+# Deployment to EKS cluster using kubectl
+
+include:
+  - project: 'Project/gitlab-ci' # https://gitlab.example.com/Project/gitlab-ci
+    ref: 'main'
+    file:
+      - '/defaults.yml'
+  - local: "/ci/stg.yml"
+  - local: "/ci/prd.yml"
+
+lint:
+  extends: [ '.docker-runner' ]
+  stage: 'lint'
+  image: 'docker:25'
+  before_script:
+    - apk add make
+  services:
+    - docker:25-dind
+  script:
+    - cp .env.dev .env
+    - TEST_TAG=$CI_COMMIT_SHORT_SHA make lint
+
+sonarqube-check:
+  extends: [ '.sonarqube-check' ]
+
+coverage:
+  extends: [ '.docker-runner' ]
+  stage: 'coverage'
+  image: 'docker:25'
+  before_script:
+    - apk add make
+  services: [ 'docker:25-dind' ]
+  script:
+    - cp .env.dev .env
+    - TEST_TAG=$CI_COMMIT_SHORT_SHA make coverage
+
+build:
+  extends: [ '.prd-branch', '.docker-runner', '.build' ]
+
+deploy-dev:
+  needs: [ 'build' ]
+  extends: [ '.prd-branch', '.deploy' ] # Uses default shared runner
+  environment:
+    name: 'dev'
+  variables:
+    HOST: 'gitlab@docker.domain.com'
+    PROJECT_FOLDER: '/srv/docker/<project-folder>-dev'
+    SSH_KEY: "${SSH_PRIVATE_KEY_gitlab_at_docker_domain_com}"
+    DEPLOY_COMMAND: 'git pull && docker compose up -d app pgadmin'
+
+deploy-eks:
+  stage: deploy
+  image: 'amazon/aws-cli:2.13.2'
+  needs: ['build']
+  environment:
+    name: 'dev'
+  variables:
+    KUBECONFIG: "${CI_PROJECT_DIR}/kubeconfig"
+  before_script:
+    # Setup kubectl
+    - curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
+    - chmod +x kubectl
+    - mv kubectl /usr/local/bin/
+
+    # Configure AWS CLI
+    - aws configure set aws_access_key_id $AWS_ACCESS_KEY_ID
+    - aws configure set aws_secret_access_key $AWS_SECRET_ACCESS_KEY
+    - aws configure set region $AWS_REGION
+
+    # Get kubeconfig for the cluster EKS
+    - aws eks update-kubeconfig --name $CLUSTER_NAME --kubeconfig $KUBECONFIG
+
+  script:
+    - kubectl apply -f k8s/deployment.yml -n 'dev'             # Deploy app
+    - kubectl apply -f k8s/service.yml -n 'dev'                # Configure service (LB)
+    - kubectl rollout status deployment/kerber_v2 -n 'dev'     # To check success deploy
+  only:
+    - feature/branch
