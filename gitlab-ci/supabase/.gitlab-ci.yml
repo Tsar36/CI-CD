@@ -1,0 +1,69 @@
+image: node:20
+
+stages:
+  - lint
+  - check
+  - deploy
+
+lint-deno:
+  stage: lint
+  image: denoland/deno:latest
+  script:
+    - cd ./supabase/functions
+    - deno lint
+  allow_failure: false
+
+check-deno:
+  stage: check
+  image: denoland/deno:latest
+  script:
+    - cd ./supabase/functions
+    - deno fmt
+    - deno fmt --config deno.json --check
+    - deno lint --config deno.json
+  rules:
+    - if: '$CI_MERGE_REQUEST_IID'
+      when: on_success
+    - when: never
+
+
+deploy-function:
+  stage: deploy
+  image: node:20
+  services:
+    - docker:dind
+  variables:
+    DOCKER_HOST: tcp://docker:2375
+    DOCKER_TLS_CERTDIR: ""
+  rules:
+    - if: '$CI_COMMIT_REF_NAME == "main"'
+      when: manual
+      
+  script:
+    - set -e
+    - npx supabase link --project-ref "$SUPABASE_PROJECT_ID" && echo "Project linked"
+
+    # 🔹 Get a list of functions excluding '_...' and 'functions'
+    - echo "Checking available functions..."
+    - |
+      FUNCTIONS=$(find supabase/functions -maxdepth 1 -mindepth 1 -type d -printf "%f\n" | grep -E '^[A-Za-z]' | grep -Ev '^(functions)$' | sort -u || true)
+      echo "Available functions: $FUNCTIONS"
+      if [[ -z "$FUNCTIONS" ]]; then
+        echo "⚠️ No valid functions found to deploy."
+        exit 0
+      fi
+
+
+    # 🔹 Deploy all features with JWT disabled
+    - echo "Deploying functions..."
+    - |
+      for function in $FUNCTIONS; do
+        echo "🚀 Deploying function: $function"
+        if ! npx supabase functions deploy "$function" --no-verify-jwt; then
+          echo "❌ Failed to deploy $function"
+          exit 1
+        fi
+
+        echo "✅ Function $function deployed successfully."
+      done
+
