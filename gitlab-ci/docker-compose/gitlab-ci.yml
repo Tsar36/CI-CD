@@ -7,7 +7,7 @@ stages:
 variables:
   APP_IMAGE: "$CI_REGISTRY_IMAGE/app"
   PROJECT_DIR: "/srv/docker/project01/dev"
-  HOST: "gitlab@host.domain.com"
+  HOST: "gitlab@host01CI.domain.com"
   DOCKER_TLS_CERTDIR: ""
   DOCKER_DRIVER: "overlay2"
   CACHE_FOLDER: .docker
@@ -18,7 +18,7 @@ variables:
     - mkdir -p ~/.ssh
     - install -m 600 /dev/null ~/.ssh/id_rsa
     - echo "$SSH_PRIVATE_KEY" > ~/.ssh/id_rsa
-    - ssh-keyscan -H docker01.cpcs.ws >> ~/.ssh/known_hosts
+    - ssh-keyscan -H host01.domain.com >> ~/.ssh/known_hosts
 
 build:
   stage: build
