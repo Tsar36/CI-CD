@@ -1,0 +1,75 @@
+stages:
+  - build
+  - test
+  - test-ssh
+  - deploy
+
+variables:
+  APP_IMAGE: "$CI_REGISTRY_IMAGE/app"
+  PROJECT_DIR: "/srv/docker/project01/dev"
+  HOST: "gitlab@host.domain.com"
+  DOCKER_TLS_CERTDIR: ""
+  DOCKER_DRIVER: "overlay2"
+  CACHE_FOLDER: .docker
+
+.setup_ssh: &setup_ssh
+  before_script:
+    - apk add --no-cache openssh-client
+    - mkdir -p ~/.ssh
+    - install -m 600 /dev/null ~/.ssh/id_rsa
+    - echo "$SSH_PRIVATE_KEY" > ~/.ssh/id_rsa
+    - ssh-keyscan -H docker01.cpcs.ws >> ~/.ssh/known_hosts
+
+build:
+  stage: build
+  image: docker:latest
+  services:
+    - docker:dind
+  tags:
+    - docker
+  script:
+    - echo "Login to Container Registry"
+    - docker login -u "$CI_REGISTRY_USER" -p "$CI_REGISTRY_PASSWORD" $CI_REGISTRY
+    - docker build --no-cache -t $CI_REGISTRY_IMAGE:$CI_COMMIT_SHORT_SHA .
+    - docker tag $CI_REGISTRY_IMAGE:$CI_COMMIT_SHORT_SHA $CI_REGISTRY_IMAGE:latest
+    - docker push $CI_REGISTRY_IMAGE:$CI_COMMIT_SHORT_SHA
+    - docker push $CI_REGISTRY_IMAGE:latest
+  only:
+    - main
+  environment:
+    name: dev
+
+test-ssh:
+  stage: test-ssh
+  image: alpine:latest
+  <<: *setup_ssh
+  script:
+    - ssh $HOST "echo 'SSH working!!!'"
+  only:
+    - main
+  environment:
+    name: dev
+
+deploy:
+  stage: deploy
+  image: alpine:latest
+  before_script:
+    - apk update && apk add --no-cache openssh-client rsync
+    - eval $(ssh-agent -s)
+    - mkdir -p ~/.ssh
+    - '[[ -f /.dockerenv ]] && echo -e "Host *\n\tStrictHostKeyChecking no\n\n" > ~/.ssh/config'
+  script:
+    - echo "$SSH_PRIVATE_KEY" | ssh-add -
+    - ssh $HOST "docker login -u $CI_REGISTRY_USER -p $CI_REGISTRY_PASSWORD $CI_REGISTRY"
+    - ssh $HOST "docker-compose -f $PROJECT_DIR/docker-compose.dev.yml down"
+    - ssh $HOST "docker-compose -f $PROJECT_DIR/docker-compose.dev.yml rm -f"
+    - rsync -av --delete --exclude='.git' --exclude='node_modules' . $HOST:$PROJECT_DIR/
+    - ssh $HOST "docker pull $CI_REGISTRY_IMAGE:latest"
+    - ssh $HOST "docker-compose -f $PROJECT_DIR/docker-compose.dev.yml up -d"
+    - ssh $HOST "docker ps -a"
+    - ssh $HOST "docker-compose -f $PROJECT_DIR/docker-compose.dev.yml logs --tail=50"
+    - echo '✅ Deploy completed!'
+  only:
+    - main
+  environment:
+    name: dev
